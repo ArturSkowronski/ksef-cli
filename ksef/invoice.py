@@ -101,7 +101,7 @@ def send(
         },
     }
 
-    with KSeFClient(session_token=session_token) as client:
+    with KSeFClient(access_token=session_token) as client:
         try:
             result = client.send_invoice(payload)
         except KSeFError as exc:
@@ -119,7 +119,7 @@ def send(
 def _poll_status(session_token: str, ref: str) -> None:
     console.print(f"[dim]Polling for processing status...[/dim]")
     start = time.time()
-    with KSeFClient(session_token=session_token) as client:
+    with KSeFClient(access_token=session_token) as client:
         while time.time() - start < POLL_TIMEOUT:
             try:
                 result = client.invoice_status(ref)
@@ -156,7 +156,7 @@ def status(
     """Check the processing status of a sent invoice."""
     session_token = config.require_session()
 
-    with KSeFClient(session_token=session_token) as client:
+    with KSeFClient(access_token=session_token) as client:
         try:
             result = client.invoice_status(reference)
         except KSeFError as exc:
@@ -187,7 +187,7 @@ def get(
     """Download an invoice XML by reference number."""
     session_token = config.require_session()
 
-    with KSeFClient(session_token=session_token) as client:
+    with KSeFClient(access_token=session_token) as client:
         try:
             content = client.get_invoice(reference)
         except KSeFError as exc:
@@ -231,7 +231,7 @@ def list_invoices(
         }
     }
 
-    with KSeFClient(session_token=session_token) as client:
+    with KSeFClient(access_token=session_token) as client:
         try:
             result = client.query_invoice(payload)
         except KSeFError as exc:
@@ -245,7 +245,7 @@ def list_invoices(
 
     # Poll for query results
     start = time.time()
-    with KSeFClient(session_token=session_token) as client:
+    with KSeFClient(access_token=session_token) as client:
         while time.time() - start < 60:
             try:
                 status_result = client.query_invoice_status(query_id)

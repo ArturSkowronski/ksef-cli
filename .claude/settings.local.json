@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init:*)",
+      "Bash(git branch:*)",
+      "Skill(claude-api)",
+      "Bash(git:*)",
+      "Bash(ksef:*)",
+      "WebFetch(domain:ksef.mf.gov.pl)",
+      "WebFetch(domain:www.podatki.gov.pl)",
+      "WebFetch(domain:ksef.dev)",
+      "WebFetch(domain:nip24.pl)",
+      "WebFetch(domain:ksbot.pl)",
+      "WebFetch(domain:api.ksef.mf.gov.pl)"
+    ]
+  }
+}

@@ -1,30 +1,60 @@
-"""Tests for ksef.auth — unit tests with mocked client."""
+"""Tests for ksef.auth — unit tests for RSA-OAEP token encryption."""
 
 from __future__ import annotations
 
-import hashlib
 import base64
 
 import pytest
 
-from ksef.auth import _sign_challenge
+from ksef.auth import _encrypt_token
 
 
-def test_sign_challenge_deterministic():
-    sig1 = _sign_challenge("challenge123", "token456")
-    sig2 = _sign_challenge("challenge123", "token456")
-    assert sig1 == sig2
+def _generate_test_rsa_key() -> tuple[str, object]:
+    """Generate a throwaway RSA key pair for testing."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    pem = public_key.public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
+    return pem, private_key
 
 
-def test_sign_challenge_sha256_base64():
-    challenge = "abc"
-    token = "def"
-    expected_payload = (challenge + "|" + token).encode("utf-8")
-    expected = base64.b64encode(hashlib.sha256(expected_payload).digest()).decode()
-    assert _sign_challenge(challenge, token) == expected
+def test_encrypt_token_returns_base64():
+    pem, _ = _generate_test_rsa_key()
+    result = _encrypt_token("mytoken", 1700000000000, pem)
+    # Must be valid base64
+    decoded = base64.b64decode(result)
+    assert len(decoded) == 256  # 2048-bit RSA → 256-byte ciphertext
 
 
-def test_sign_challenge_changes_with_input():
-    sig1 = _sign_challenge("challenge1", "token")
-    sig2 = _sign_challenge("challenge2", "token")
-    assert sig1 != sig2
+def test_encrypt_token_decryptable():
+    """Encrypt then decrypt should round-trip."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    pem, private_key = _generate_test_rsa_key()
+    token = "ABCDEF123456"
+    ts = 1700000000000
+    encrypted_b64 = _encrypt_token(token, ts, pem)
+
+    ciphertext = base64.b64decode(encrypted_b64)
+    plaintext = private_key.decrypt(
+        ciphertext,
+        padding.OAEP(
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
+        ),
+    )
+    assert plaintext.decode("utf-8") == f"{token}|{ts}"
+
+
+def test_encrypt_token_different_for_different_inputs():
+    pem, _ = _generate_test_rsa_key()
+    enc1 = _encrypt_token("token1", 1000, pem)
+    enc2 = _encrypt_token("token2", 1000, pem)
+    assert enc1 != enc2

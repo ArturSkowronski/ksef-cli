@@ -17,6 +17,7 @@ dependencies = [
     "lxml>=5.2",
     "rich>=13",
     "tomli-w>=1.0",
+    "cryptography>=42",
 ]
 
 [project.scripts]
