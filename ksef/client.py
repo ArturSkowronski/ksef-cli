@@ -1,14 +1,17 @@
-"""httpx-based KSeF API v2 client with session management and error parsing."""
+"""httpx-based KSeF API client with session management and error parsing."""
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
 import httpx
 from rich.console import Console
 
-KSEF_BASE_URL = "https://ksef.mf.gov.pl"
+from . import config
+
 TIMEOUT = 30.0
+API_PREFIX = "/api/v2"
 
 _err_console = Console(stderr=True)
 
@@ -24,20 +27,36 @@ class KSeFError(Exception):
 
 
 def _parse_error(response: httpx.Response) -> KSeFError:
-    """Try to extract KSeF error code + message from a non-2xx response."""
+    """Parse error from response — supports problem+json, nested exception, and legacy formats."""
     try:
+        ct = response.headers.get("content-type", "")
         body = response.json()
-        # KSeF v2 wraps errors in various shapes
-        code = (
-            body.get("code", "")
-            or body.get("exceptionDetailList", [{}])[0].get("exceptionCode", "")
-            or str(response.status_code)
-        )
-        msg = (
-            body.get("message", "")
-            or body.get("exceptionDetailList", [{}])[0].get("exceptionDescription", "")
-            or response.text
-        )
+
+        if "application/problem+json" in ct or "reasonCode" in body:
+            # problem+json format
+            code = body.get("reasonCode") or body.get("status") or str(response.status_code)
+            msg = body.get("detail") or body.get("title") or response.text
+        elif "exception" in body:
+            # Nested exception format: {"exception": {"exceptionDetailList": [...]}}
+            exc = body["exception"]
+            details = exc.get("exceptionDetailList", [{}])
+            first = details[0] if details else {}
+            code = first.get("exceptionCode", str(response.status_code))
+            desc = first.get("exceptionDescription", "")
+            extra = first.get("details", [])
+            msg = f"{desc} {'; '.join(extra)}".strip() if extra else desc or response.text
+        else:
+            # Legacy flat format
+            code = (
+                body.get("code", "")
+                or body.get("exceptionDetailList", [{}])[0].get("exceptionCode", "")
+                or str(response.status_code)
+            )
+            msg = (
+                body.get("message", "")
+                or body.get("exceptionDetailList", [{}])[0].get("exceptionDescription", "")
+                or response.text
+            )
     except Exception:
         code = str(response.status_code)
         msg = response.text or "Unknown error"
@@ -45,14 +64,17 @@ def _parse_error(response: httpx.Response) -> KSeFError:
 
 
 class KSeFClient:
-    """Thin httpx wrapper around the KSeF REST API v2."""
+    """Thin httpx wrapper around the KSeF REST API."""
 
     def __init__(
         self,
         access_token: Optional[str] = None,
-        base_url: str = KSEF_BASE_URL,
+        base_url: Optional[str] = None,
         timeout: float = TIMEOUT,
     ) -> None:
+        if base_url is None:
+            base_url = config.get_base_url()
+
         headers: dict[str, str] = {
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -80,7 +102,7 @@ class KSeFClient:
         content_type: Optional[str] = None,
         raw_body: Optional[bytes] = None,
     ) -> httpx.Response:
-        """Send a request, retry once on network error, raise KSeFError on 4xx/5xx."""
+        """Send a request with retry on network error, 429 backoff, and KSeFError on 4xx/5xx."""
         kwargs: dict[str, Any] = {}
         if json_body is not None:
             kwargs["json"] = json_body
@@ -102,6 +124,17 @@ class KSeFClient:
                         f"Network error: {exc}",
                     ) from exc
 
+        # Handle 429 Too Many Requests with Retry-After
+        if resp.status_code == 429:
+            retry_after = resp.headers.get("Retry-After", "5")
+            try:
+                wait = int(retry_after)
+            except ValueError:
+                wait = 5
+            time.sleep(min(wait, 60))
+            # One retry after rate limit
+            resp = self._client.request(method, path, **kwargs)
+
         if resp.is_error:
             raise _parse_error(resp)
         return resp
@@ -122,65 +155,115 @@ class KSeFClient:
         self.close()
 
     # ------------------------------------------------------------------
-    # Auth endpoints (KSeF API v2)
+    # Auth endpoints
     # ------------------------------------------------------------------
 
-    def get_public_key(self) -> dict:
-        """GET /api/v2/security/public-key-certificates — returns current KSeF public key."""
-        resp = self.get("/api/v2/security/public-key-certificates")
+    def get_public_key(self) -> list | dict:
+        """GET /api/v2/security/public-key-certificates"""
+        resp = self.get(f"{API_PREFIX}/security/public-key-certificates")
         return resp.json()
 
     def auth_challenge(self, nip: str) -> dict:
-        """POST /api/v2/auth/challenge — get a challenge for token-based auth."""
+        """POST /api/v2/auth/challenge"""
         resp = self.post(
-            "/api/v2/auth/challenge",
+            f"{API_PREFIX}/auth/challenge",
             json_body={"contextIdentifier": {"type": "nip", "value": nip}},
         )
         return resp.json()
 
     def auth_ksef_token(self, payload: dict) -> dict:
-        """POST /api/v2/auth/ksef-token — submit encrypted token, get authenticationToken."""
-        resp = self.post("/api/v2/auth/ksef-token", json_body=payload)
+        """POST /api/v2/auth/ksef-token"""
+        resp = self.post(f"{API_PREFIX}/auth/ksef-token", json_body=payload)
         return resp.json()
 
     def auth_token_status(self, reference_number: str) -> dict:
-        """GET /api/v2/auth/token/status/{ref} — poll until DONE."""
-        resp = self.get(f"/api/v2/auth/token/status/{reference_number}")
+        """GET /api/v2/auth/token/status/{ref}"""
+        resp = self.get(f"{API_PREFIX}/auth/token/status/{reference_number}")
         return resp.json()
 
     def auth_token_redeem(self, authentication_token: str) -> dict:
-        """POST /api/v2/auth/token/redeem — exchange authenticationToken for accessToken."""
+        """POST /api/v2/auth/token/redeem — requires Bearer auth header."""
+        resp = self._client.request(
+            "POST",
+            f"{API_PREFIX}/auth/token/redeem",
+            headers={
+                "Authorization": f"Bearer {authentication_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={"authenticationToken": authentication_token},
+        )
+        if resp.is_error:
+            raise _parse_error(resp)
+        return resp.json()
+
+    def auth_token_refresh(self, refresh_token: str) -> dict:
+        """POST /api/v2/auth/token/refresh — refresh access token using refresh token."""
+        resp = self._client.request(
+            "POST",
+            f"{API_PREFIX}/auth/token/refresh",
+            headers={
+                "Authorization": f"Bearer {refresh_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={},
+        )
+        if resp.is_error:
+            raise _parse_error(resp)
+        return resp.json()
+
+    # ------------------------------------------------------------------
+    # Session endpoints (session-based invoice workflow)
+    # ------------------------------------------------------------------
+
+    def open_session(self, form_code: dict, encryption: dict) -> dict:
+        """POST /api/v2/sessions/online — open an invoice sending session."""
         resp = self.post(
-            "/api/v2/auth/token/redeem",
-            json_body={"authenticationToken": authentication_token},
+            f"{API_PREFIX}/sessions/online",
+            json_body={"formCode": form_code, "encryption": encryption},
         )
         return resp.json()
 
-    def auth_logout(self) -> dict:
-        """POST /api/v2/auth/logout — terminate session."""
-        resp = self.post("/api/v2/auth/logout", json_body={})
+    def send_invoice_in_session(self, session_ref: str, payload: dict) -> dict:
+        """POST /api/v2/sessions/online/{sessionRef}/invoices/"""
+        resp = self.post(
+            f"{API_PREFIX}/sessions/online/{session_ref}/invoices/",
+            json_body=payload,
+        )
+        return resp.json()
+
+    def close_session(self, session_ref: str) -> dict:
+        """POST /api/v2/sessions/online/{sessionRef}/close"""
+        resp = self.post(f"{API_PREFIX}/sessions/online/{session_ref}/close", json_body={})
+        return resp.json()
+
+    def session_status(self, session_ref: str) -> dict:
+        """GET /api/v2/sessions/{sessionRef}"""
+        resp = self.get(f"{API_PREFIX}/sessions/{session_ref}")
+        return resp.json()
+
+    def invoice_status_in_session(self, session_ref: str, invoice_ref: str) -> dict:
+        """GET /api/v2/sessions/{sessionRef}/invoices/{invoiceRef}"""
+        resp = self.get(f"{API_PREFIX}/sessions/{session_ref}/invoices/{invoice_ref}")
         return resp.json()
 
     # ------------------------------------------------------------------
-    # Invoice endpoints (KSeF API v2)
+    # Invoice endpoints
     # ------------------------------------------------------------------
 
-    def send_invoice(self, payload: dict) -> dict:
-        resp = self.post("/api/v2/invoice/send", json_body=payload)
-        return resp.json()
-
-    def invoice_status(self, reference_number: str) -> dict:
-        resp = self.get(f"/api/v2/invoice/status/{reference_number}")
-        return resp.json()
-
-    def get_invoice(self, reference_number: str) -> bytes:
-        resp = self.get(f"/api/v2/invoice/{reference_number}")
+    def get_invoice_by_ksef(self, ksef_number: str) -> bytes:
+        """GET /api/v2/invoices/ksef/{ksefNumber}"""
+        resp = self.get(f"{API_PREFIX}/invoices/ksef/{ksef_number}")
         return resp.content
 
-    def query_invoice(self, payload: dict) -> dict:
-        resp = self.post("/api/v2/invoice/query", json_body=payload)
-        return resp.json()
+    def query_invoice_metadata(self, payload: dict) -> dict:
+        """POST /api/v2/invoices/query/metadata — synchronous query with pagination."""
+        resp = self.post(f"{API_PREFIX}/invoices/query/metadata", json_body=payload)
+        result = resp.json()
+        # Capture continuation token from header for pagination
+        continuation = resp.headers.get("x-continuation-token")
+        if continuation:
+            result["_continuationToken"] = continuation
+        return result
 
-    def query_invoice_status(self, query_id: str) -> dict:
-        resp = self.get(f"/api/v2/invoice/query/{query_id}")
-        return resp.json()

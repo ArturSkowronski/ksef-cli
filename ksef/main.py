@@ -23,6 +23,13 @@ app.add_typer(auth.app, name="auth")
 app.add_typer(invoice.app, name="invoice")
 
 
+@app.command()
+def tui() -> None:
+    """Launch the interactive TUI dashboard."""
+    from .tui import run_tui
+    run_tui()
+
+
 # ---------------------------------------------------------------------------
 # Config subcommand
 # ---------------------------------------------------------------------------
@@ -43,6 +50,7 @@ def config_show() -> None:
     table.add_column("Value")
 
     table.add_row("nip", cfg.get("nip") or "[dim]not set[/dim]")
+    table.add_row("environment", cfg.get("environment", "PRD"))
 
     token = cfg.get("token", "")
     if token:
@@ -60,13 +68,20 @@ def config_show() -> None:
 
     table.add_row("session_expiry", cfg.get("session_expiry") or "[dim]none[/dim]")
 
+    refresh_token = cfg.get("refresh_token", "")
+    if refresh_token:
+        table.add_row("refresh_token", refresh_token[:8] + "..." + refresh_token[-4:])
+    else:
+        table.add_row("refresh_token", "[dim]none[/dim]")
+
     console.print(table)
 
 
 @config_app.command("set")
 def config_set(
-    nip: Optional[str] = typer.Option(None, "--nip", help="Taxpayer NIP"),
-    token: Optional[str] = typer.Option(None, "--token", help="KSeF authorisation token"),
+    nip: Optional[str] = typer.Option(None, "--nip", envvar="KSEF_NIP", help="Taxpayer NIP"),
+    token: Optional[str] = typer.Option(None, "--token", envvar="KSEF_TOKEN", help="KSeF authorisation token"),
+    environment: Optional[str] = typer.Option(None, "--environment", "-e", help="Environment: PRD, TEST, or DEMO"),
 ) -> None:
     """Save credentials to config without authenticating."""
     updates: dict[str, str] = {}
@@ -74,9 +89,15 @@ def config_set(
         updates["nip"] = nip.strip()
     if token is not None:
         updates["token"] = token.strip()
+    if environment is not None:
+        env = environment.strip().upper()
+        if env not in ("PRD", "TEST", "DEMO"):
+            console.print("[red]Environment must be PRD, TEST, or DEMO.[/red]")
+            raise typer.Exit(1)
+        updates["environment"] = env
 
     if not updates:
-        console.print("[yellow]Nothing to set. Use --nip or --token.[/yellow]")
+        console.print("[yellow]Nothing to set. Use --nip, --token, or --environment.[/yellow]")
         raise typer.Exit(0)
 
     cfg_module.set_values(**updates)

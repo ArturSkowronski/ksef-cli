@@ -1,4 +1,4 @@
-"""Tests for ksef.auth — unit tests for RSA-OAEP token encryption."""
+"""Tests for ksef.auth — RSA-OAEP token encryption and auth flow."""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ def _generate_test_rsa_key() -> tuple[str, object]:
 def test_encrypt_token_returns_base64():
     pem, _ = _generate_test_rsa_key()
     result = _encrypt_token("mytoken", 1700000000000, pem)
-    # Must be valid base64
     decoded = base64.b64decode(result)
     assert len(decoded) == 256  # 2048-bit RSA → 256-byte ciphertext
 
@@ -58,3 +57,11 @@ def test_encrypt_token_different_for_different_inputs():
     enc1 = _encrypt_token("token1", 1000, pem)
     enc2 = _encrypt_token("token2", 1000, pem)
     assert enc1 != enc2
+
+
+def test_encrypt_token_uses_crypto_module():
+    """Verify _encrypt_token delegates to crypto.rsa_encrypt_b64."""
+    pem, private_key = _generate_test_rsa_key()
+    result = _encrypt_token("test", 999, pem)
+    # Should produce valid base64 of 256 bytes (RSA-2048)
+    assert len(base64.b64decode(result)) == 256

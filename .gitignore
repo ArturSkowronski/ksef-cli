@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# Claude Code local settings (may contain tokens/secrets)
+.claude/settings.local.json
+
+# KSeF invoice XML files (may contain real invoice/personal data)
+*.xml
+
+# KSeF config (contains tokens)
+~/.ksef/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor
+.DS_Store
+*.swp

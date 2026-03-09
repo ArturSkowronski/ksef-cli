@@ -1,9 +1,8 @@
-"""Tests for ksef.invoice — helpers and XML passthrough."""
+"""Tests for ksef.invoice — helpers and session workflow."""
 
 from __future__ import annotations
 
 from pathlib import Path
-import tempfile
 
 import pytest
 

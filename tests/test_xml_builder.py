@@ -1,4 +1,4 @@
-"""Tests for ksef.xml_builder."""
+"""Tests for ksef.xml_builder (FA(3))."""
 
 from __future__ import annotations
 
@@ -60,6 +60,23 @@ def test_xml_parses():
     assert root.tag == f"{{{FA_NS}}}Faktura"
 
 
+def test_xml_fa3_namespace():
+    """FA(3) namespace should be the new 2025 one."""
+    assert "2025/06/25/13775" in FA_NS
+
+
+def test_xml_fa3_header():
+    """Header should reference FA (3) and WariantFormularza=3."""
+    xml = build_xml(_sample_invoice())
+    root = etree.fromstring(xml)
+    kod = root.find(f".//{{{FA_NS}}}KodFormularza")
+    assert kod is not None
+    assert kod.get("kodSystemowy") == "FA (3)"
+    wariant = root.find(f".//{{{FA_NS}}}WariantFormularza")
+    assert wariant is not None
+    assert wariant.text == "3"
+
+
 def test_xml_contains_invoice_number():
     xml = build_xml(_sample_invoice())
     root = etree.fromstring(xml)
@@ -71,7 +88,6 @@ def test_xml_contains_invoice_number():
 def test_xml_contains_seller_nip():
     xml = build_xml(_sample_invoice())
     root = etree.fromstring(xml)
-    # First NIP element should belong to seller
     nips = root.findall(f".//{{{FA_NS}}}NIP")
     assert len(nips) >= 1
     assert nips[0].text == "1234567890"
@@ -99,7 +115,6 @@ def test_validate_xml_no_schema():
     """validate_xml should return empty list when schema file is absent."""
     xml = build_xml(_sample_invoice())
     errors = validate_xml(xml)
-    # Either empty (no schema) or a list of strings
     assert isinstance(errors, list)
 
 
@@ -108,6 +123,27 @@ def test_buyer_without_nip():
     invoice.buyer.nip = None
     xml = build_xml(invoice)
     root = etree.fromstring(xml)
-    # Should have BrakID element
     brak = root.find(f".//{{{FA_NS}}}BrakID")
     assert brak is not None
+
+
+def test_payment_link():
+    """FA(3) LinkDoPlatnosci should appear in XML."""
+    invoice = _sample_invoice()
+    invoice.payment_link = "https://pay.example.com/inv/123"
+    xml = build_xml(invoice)
+    root = etree.fromstring(xml)
+    link = root.find(f".//{{{FA_NS}}}LinkDoPlatnosci")
+    assert link is not None
+    assert link.text == "https://pay.example.com/inv/123"
+
+
+def test_payment_deadline_days():
+    """FA(3) payment_deadline_days should render TerminDni."""
+    invoice = _sample_invoice()
+    invoice.payment_deadline_days = 14
+    xml = build_xml(invoice)
+    root = etree.fromstring(xml)
+    termin_dni = root.find(f".//{{{FA_NS}}}TerminDni")
+    assert termin_dni is not None
+    assert termin_dni.text == "14"

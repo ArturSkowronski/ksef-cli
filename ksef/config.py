@@ -13,12 +13,27 @@ import tomli_w
 CONFIG_DIR = Path.home() / ".ksef"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
+KSEF_URLS = {
+    "PRD": "https://api.ksef.mf.gov.pl",
+    "TEST": "https://api-test.ksef.mf.gov.pl",
+    "DEMO": "https://api-demo.ksef.mf.gov.pl",
+}
+
 _DEFAULT: dict = {
     "nip": "",
     "token": "",
     "session_token": "",
     "session_expiry": "",
+    "refresh_token": "",
+    "refresh_expiry": "",
+    "environment": "PRD",
 }
+
+
+def get_base_url() -> str:
+    """Return the KSeF API base URL for the configured environment."""
+    env = get("environment").upper() or "PRD"
+    return KSEF_URLS.get(env, KSEF_URLS["PRD"])
 
 
 def _ensure_config_dir() -> None:

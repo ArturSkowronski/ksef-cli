@@ -1,4 +1,4 @@
-"""Build KSeF FA(2) XML from InvoiceData and optionally validate against XSD."""
+"""Build KSeF FA(3) XML from InvoiceData and optionally validate against XSD."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from lxml import etree
 
 from .models import InvoiceData, LineItem
 
-# FA(2) namespace
-FA_NS = "http://crd.gov.pl/wzor/2023/06/29/12648/"
-XSD_PATH = Path(__file__).parent / "schemas" / "FA_VAT_FA(2).xsd"
+# FA(3) namespace
+FA_NS = "http://crd.gov.pl/wzor/2025/06/25/13775/"
+XSD_PATH = Path(__file__).parent / "schemas" / "FA_VAT_FA(3).xsd"
 
 
 def build_xml(invoice: InvoiceData) -> bytes:
-    """Render InvoiceData → KSeF FA(2) XML (UTF-8, with XML declaration)."""
+    """Render InvoiceData → KSeF FA(3) XML (UTF-8, with XML declaration)."""
     root = etree.Element(
         f"{{{FA_NS}}}Faktura",
         nsmap={None: FA_NS},
@@ -25,8 +25,8 @@ def build_xml(invoice: InvoiceData) -> bytes:
 
     # Naglowek (header)
     naglowek = _sub(root, "Naglowek")
-    _sub(naglowek, "KodFormularza", "FA", kodSystemowy="FA (2)", wersjaSchemy="1-0E")
-    _sub(naglowek, "WariantFormularza", "2")
+    _sub(naglowek, "KodFormularza", "FA", kodSystemowy="FA (3)", wersjaSchemy="1-0E")
+    _sub(naglowek, "WariantFormularza", "3")
     _sub(naglowek, "DataWytworzeniaFa", invoice.issue_date.isoformat())
     _sub(naglowek, "SystemInfo", "ksef-cli")
 
@@ -95,7 +95,14 @@ def build_xml(invoice: InvoiceData) -> bytes:
     _sub(fa, "P_15", _fmt(invoice.total_gross))
 
     if invoice.due_date:
-        _sub(fa, "TerminPlatnosci", _sub_elem("Termin", invoice.due_date.isoformat()))
+        termin = _sub(fa, "TerminPlatnosci")
+        _sub(termin, "Termin", invoice.due_date.isoformat())
+    elif invoice.payment_deadline_days is not None:
+        termin = _sub(fa, "TerminPlatnosci")
+        _sub(termin, "TerminDni", str(invoice.payment_deadline_days))
+
+    if invoice.payment_link:
+        _sub(fa, "LinkDoPlatnosci", invoice.payment_link)
 
     if invoice.notes:
         _sub(fa, "Adnotacje", invoice.notes)

@@ -43,6 +43,8 @@ class InvoiceData(BaseModel):
     issue_date: date
     sale_date: Optional[date] = None
     due_date: Optional[date] = None
+    payment_link: Optional[str] = None           # FA(3) LinkDoPlatnosci
+    payment_deadline_days: Optional[int] = None  # FA(3) alternative to due_date
 
     seller: SellerData
     buyer: BuyerData
