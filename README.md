@@ -1,12 +1,10 @@
 # ksef-cli
 
-Command-line client for the Polish National e-Invoice System (KSeF / Krajowy System e-Faktur). Built for both humans and AI agents.
+> A command-line client for the Polish National e-Invoice System (KSeF). Send, receive, and manage e-invoices from your terminal — or let your AI agent do it.
 
-- Authenticate with the KSeF production API (v2)
-- Generate KSeF-compliant FA(3) XML from PDF, image, or raw data
-- Send, download, and list invoices
-- Machine-readable `--json` output for agent/automation use
-- Secure credential storage (`~/.ksef/config.toml`, mode 600)
+Poland's KSeF system requires every invoice to be submitted as a cryptographically signed XML document through a session-encrypted API. `ksef-cli` handles all of that for you: RSA-OAEP token authentication, AES-256-CBC session encryption, FA(3) XML generation, and status polling — wrapped in a single command.
+
+You can also hand a PDF scan to the tool and it will extract the invoice fields, build the XML, and send it — using Claude AI when the heuristic parser isn't confident enough.
 
 ---
 
@@ -20,7 +18,7 @@ pip install -e ".[dev]"
 
 Requires **Python 3.11+**.
 
-For AI-powered PDF extraction, set your Anthropic API key:
+For AI-assisted PDF extraction, set your Anthropic API key:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -28,77 +26,113 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 ---
 
-## Quick Start
+## Getting started
+
+Save your KSeF credentials once:
 
 ```bash
-# 1. Save credentials
 ksef config set --nip 1234567890 --token <YOUR_KSEF_TOKEN>
+```
 
-# 2. Log in
+Log in (this performs the full KSeF challenge/response auth and stores your session token):
+
+```bash
 ksef auth login
+```
 
-# 3. List this month's invoices
-ksef invoice list
+You're ready. Send your first invoice:
 
-# 4. Send an invoice
+```bash
 ksef invoice send invoice.xml
 ```
+
+That's it. `ksef-cli` opens an encrypted session, uploads the invoice, closes the session, and polls until KSeF confirms processing. You get the KSeF reference number when it's done.
 
 ---
 
 ## Authentication
 
+KSeF uses a multi-step auth flow: challenge → RSA-encrypted token → access token + refresh token. `ksef-cli` handles all of it transparently.
+
 ```bash
-ksef auth login --nip 1234567890 --token <TOKEN>   # challenge/response auth
-ksef auth status                                    # show session + expiry
-ksef auth refresh                                   # refresh access token
-ksef auth logout                                    # clear local session
+ksef auth login             # full auth flow, saves session
+ksef auth status            # show session expiry and token info
+ksef auth refresh           # refresh access token using refresh token
+ksef auth logout            # clear local session tokens
+```
+
+Sessions expire in about an hour. The refresh token lasts 24 hours. Run `ksef auth refresh` to extend your session without re-entering credentials.
+
+---
+
+## Working with invoices
+
+### From PDF or image to KSeF in one command
+
+```bash
+ksef invoice send invoice.pdf
+```
+
+The tool extracts invoice fields from the PDF, builds a KSeF-compliant FA(3) XML, and sends it. If the heuristic parser isn't confident (below 50%), it falls back to Claude AI multimodal analysis. You'll see a warning if confidence is low — review the generated XML before sending in that case.
+
+### Send XML directly
+
+```bash
+ksef invoice send invoice.xml             # send and wait for processing
+ksef invoice send invoice.xml --no-wait   # fire and forget
+```
+
+### Preview what will be sent
+
+Convert to XML without sending:
+
+```bash
+ksef invoice generate invoice.pdf --out invoice.xml
+ksef invoice generate invoice.pdf          # print to stdout
+```
+
+### Track and retrieve
+
+```bash
+ksef invoice status <reference>                             # check processing status
+ksef invoice get <ksef-number> --out invoice.xml            # download XML
+ksef invoice get <ksef-number> --pdf --out invoice.pdf      # render as PDF
+```
+
+### List invoices
+
+```bash
+ksef invoice list                                            # current month
+ksef invoice list --date-from 2024-01-01 --date-to 2024-01-31
+ksef invoice list --received                                 # invoices sent to you
+ksef invoice list --seller-nip 9876543210                    # filter by seller
 ```
 
 ---
 
-## Invoice Commands
+## For agents and automation
 
-### Generate XML
-
-Convert a PDF, image, or data file to KSeF FA(3) XML without sending:
+Every key command supports `--json` output. No Rich markup, no interactive prompts — just clean JSON on stdout and `{"error": "..."}` on stderr with a non-zero exit code on failure.
 
 ```bash
-ksef invoice generate invoice.pdf --out invoice.xml   # from PDF
-ksef invoice generate scan.png --out invoice.xml      # from image
-ksef invoice generate existing.xml --out validated.xml # passthrough + validate
-ksef invoice generate invoice.pdf                     # print XML to stdout
+# Check session before doing anything
+ksef auth status --json
+# → {"nip": "1234567890", "environment": "PRD", "sessionActive": true, "expiresIn": 3542, "expiry": "..."}
+
+# List invoices
+ksef invoice list --json
+# → {"invoices": [{"ksefNumber": "...", "invoiceNumber": "...", "buyer": "Acme Sp. z o.o.", "netAmount": "1000.00", ...}]}
+
+# Send and get the KSeF reference back
+ksef invoice send invoice.xml --json
+# → {"invoiceRef": "...", "ksefNumber": "KSeF/123/2024", "processingCode": 200}
+
+# Non-blocking send
+ksef invoice send invoice.xml --no-wait --json
+# → {"invoiceRef": "...", "ksefNumber": null, "processingCode": null}
 ```
 
-### Send
-
-```bash
-ksef invoice send invoice.xml          # send XML, wait for KSeF processing
-ksef invoice send invoice.pdf          # auto-convert PDF → XML, then send
-ksef invoice send invoice.xml --no-wait   # send and return immediately
-```
-
-### Check Status
-
-```bash
-ksef invoice status <reference-number>
-```
-
-### Download
-
-```bash
-ksef invoice get <ksef-number> --out invoice.xml        # download as XML
-ksef invoice get <ksef-number> --pdf --out invoice.pdf  # render as PDF
-```
-
-### List
-
-```bash
-ksef invoice list                                           # current month
-ksef invoice list --date-from 2024-01-01 --date-to 2024-01-31
-ksef invoice list --received                               # received invoices
-ksef invoice list --seller-nip 9876543210                  # filter by seller
-```
+A Claude Code agent skill is included at [`skills/ksef-cli/SKILL.md`](skills/ksef-cli/SKILL.md). Load it in any Claude Code session to give your agent the full context it needs to use `ksef-cli` correctly — auth flow, command reference, JSON shapes, and error handling patterns.
 
 ---
 
@@ -107,92 +141,53 @@ ksef invoice list --seller-nip 9876543210                  # filter by seller
 ```bash
 ksef config set --nip 1234567890 --token <TOKEN>
 ksef config set --environment TEST    # PRD (default) | TEST | DEMO
-ksef config show
+ksef config show                      # tokens are masked
 ```
 
-Credentials are stored in `~/.ksef/config.toml` with permissions 600. Tokens are masked in all output.
+Config lives at `~/.ksef/config.toml` with permissions 600. Credentials never appear in logs or output.
 
 ---
 
-## Agent / Automation Mode
+## How the KSeF session flow works
 
-All key commands support `--json` for machine-readable output:
+KSeF v2 requires invoices to be sent inside an encrypted session:
 
-```bash
-ksef auth status --json
-# → {"nip": "1234567890", "environment": "PRD", "sessionActive": true, "expiresIn": 3542, "expiry": "..."}
+1. Fetch the KSeF public key certificate
+2. Generate a fresh AES-256 key + IV
+3. Encrypt the AES key with RSA-OAEP using the KSeF public key
+4. Open a session (`POST /sessions/online`) with the encrypted key
+5. Encrypt the invoice XML with AES-256-CBC
+6. Upload the encrypted invoice within the session
+7. Close the session
+8. Poll for processing status (code 200 = accepted)
 
-ksef invoice list --json
-# → {"invoices": [{"ksefNumber": "...", "invoiceNumber": "...", "buyer": "...", "netAmount": "...", ...}]}
-
-ksef invoice status <ref> --json
-# → {"processingCode": 200, "processingDescription": "Processed", "ksefNumber": "KSeF/123/2024"}
-
-ksef invoice send invoice.xml --json
-# → {"invoiceRef": "...", "ksefNumber": "KSeF/123/2024", "processingCode": 200}
-```
-
-Errors go to **stderr** as `{"error": "message"}` with exit code 1. Exit code 0 means success.
-
-A Claude Code agent skill is included at [`skills/ksef-cli/SKILL.md`](skills/ksef-cli/SKILL.md).
-
----
-
-## How Invoice Extraction Works
-
-When you pass a PDF or image to `generate` or `send`:
-
-1. **PDF with text layer** — `pdfplumber` extracts text; a heuristic parser locates invoice fields
-2. **Low confidence or image-only** — `claude-opus-4-6` extracts fields via multimodal analysis
-3. **Existing XML** — passed through as-is with optional XSD validation
-
-Extraction confidence is shown at runtime. Below 50%, you'll get a warning to review the generated XML before sending.
+`ksef-cli` runs this entire flow automatically. You just provide the XML (or the PDF).
 
 ---
 
 ## Development
 
 ```bash
-# Install with dev dependencies
 pip install -e ".[dev]"
-
-# Run tests
 pytest tests/ -v          # 55 tests
-
-# Run a single test file
-pytest tests/test_invoice_cli.py -v
 ```
-
-### Project Structure
 
 ```
 ksef/
 ├── main.py         # CLI entry point (Typer)
-├── config.py       # Config file (~/.ksef/config.toml)
+├── config.py       # Config (~/.ksef/config.toml)
 ├── client.py       # KSeF API HTTP client (httpx)
-├── auth.py         # Auth commands + RSA-OAEP token encryption
+├── auth.py         # Auth commands + RSA-OAEP encryption
 ├── invoice.py      # Invoice commands
+├── crypto.py       # AES-256-CBC + RSA-OAEP helpers
 ├── extractor.py    # PDF/image → InvoiceData (pdfplumber + Claude)
 ├── xml_builder.py  # InvoiceData → FA(3) XML
 ├── models.py       # Pydantic models
-├── crypto.py       # AES-256-CBC + RSA-OAEP helpers
-├── pdf_renderer.py # XML → PDF rendering
+├── pdf_renderer.py # XML → PDF
 └── tui.py          # Interactive TUI dashboard
 
-skills/
-└── ksef-cli/
-    └── SKILL.md    # Claude Code agent skill
+skills/ksef-cli/SKILL.md   # Claude Code agent skill
 ```
-
----
-
-## KSeF API
-
-Targets the **production** KSeF API v2 at `https://ksef.mf.gov.pl`.
-
-- Auth: challenge/response with RSA-OAEP encrypted token → access token + refresh token
-- Send: session-based (AES-256-CBC encrypted invoice inside an RSA-OAEP encrypted session)
-- Schema: FA(3) namespace `http://crd.gov.pl/wzor/2025/06/25/13775/`
 
 ---
 
