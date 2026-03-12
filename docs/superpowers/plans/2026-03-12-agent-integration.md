@@ -132,7 +132,7 @@ def test_auth_status_no_json_unchanged():
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/askowronski/Priv/ksef-cli
+cd /path/to/ksef-cli
 python -m pytest tests/test_auth_cli.py -v
 ```
 
