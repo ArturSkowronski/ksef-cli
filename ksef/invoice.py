@@ -26,6 +26,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import config
+from .auth import _extract_public_key
 from .client import KSeFClient, KSeFError
 from .crypto import encrypt_aes_key, encrypt_invoice, generate_session_keys
 from .extractor import extract_from_file
@@ -78,6 +79,7 @@ def generate(
 def send(
     file: Path = typer.Argument(..., help="PDF, image, or XML invoice file to send"),
     wait: bool = typer.Option(True, "--wait/--no-wait", help="Poll for processing status"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON for agent use"),
 ) -> None:
     """Generate (if needed) and send an invoice to KSeF via session workflow."""
     if not file.exists():
@@ -88,7 +90,7 @@ def send(
     xml_bytes = _to_xml(file)
 
     errors = validate_xml(xml_bytes)
-    if errors:
+    if errors and not json_output:
         err_console.print("[yellow]XSD validation warnings (sending anyway):[/yellow]")
         for e in errors:
             err_console.print(f"  [yellow]{e}[/yellow]")
@@ -101,7 +103,6 @@ def send(
             err_console.print(f"[red]Failed to fetch public key: {exc}[/red]")
             raise typer.Exit(1)
 
-        from .auth import _extract_public_key
         public_key_pem = _extract_public_key(pk_resp, usage="SymmetricKeyEncryption")
         if not public_key_pem:
             # Fallback: try token encryption key
@@ -135,7 +136,8 @@ def send(
             err_console.print(f"[red]No session reference in response: {session_resp}[/red]")
             raise typer.Exit(1)
 
-        console.print(f"[dim]Session opened: {session_ref}[/dim]")
+        if not json_output:
+            console.print(f"[dim]Session opened: {session_ref}[/dim]")
 
         # Step 5: Encrypt invoice
         encrypted_bytes = encrypt_invoice(xml_bytes, aes_key, iv)
@@ -169,19 +171,52 @@ def send(
             raise typer.Exit(1)
 
         invoice_ref = send_resp.get("referenceNumber", "")
-        console.print(f"[green]Invoice sent.[/green]")
-        console.print(f"  Invoice reference: {invoice_ref}")
+        if not json_output:
+            console.print(f"[green]Invoice sent.[/green]")
+            console.print(f"  Invoice reference: {invoice_ref}")
 
         # Step 7: Close session
         try:
             client.close_session(session_ref)
-            console.print(f"[dim]Session closed.[/dim]")
+            if not json_output:
+                console.print(f"[dim]Session closed.[/dim]")
         except KSeFError as exc:
             err_console.print(f"[yellow]Warning: session close failed: {exc}[/yellow]")
 
-        # Step 8: Poll for status
+        # Step 8: Poll for status + emit result
+        final_ksef_number = None
+        final_code = None
+
         if wait and invoice_ref:
-            _poll_session_status(client, session_ref, invoice_ref)
+            if json_output:
+                poll_result = _poll_session_status_json(client, session_ref, invoice_ref)
+                if poll_result:
+                    final_ksef_number = poll_result.get("ksefNumber")
+                    final_code = poll_result.get("processingCode")
+            else:
+                _poll_session_status(client, session_ref, invoice_ref)
+
+        if json_output:
+            print(json.dumps({
+                "invoiceRef": invoice_ref,
+                "ksefNumber": final_ksef_number,
+                "processingCode": final_code,
+            }))
+
+
+def _poll_session_status_json(client: KSeFClient, session_ref: str, invoice_ref: str) -> dict | None:
+    """Poll invoice status and return the final result dict (or None on timeout/error)."""
+    start = time.time()
+    while time.time() - start < POLL_TIMEOUT:
+        try:
+            result = client.invoice_status_in_session(session_ref, invoice_ref)
+        except KSeFError:
+            return None
+        code = result.get("processingCode", 0)
+        if code == 200 or code >= 400:
+            return result
+        time.sleep(POLL_INTERVAL)
+    return None
 
 
 def _poll_session_status(client: KSeFClient, session_ref: str, invoice_ref: str) -> None:
@@ -221,6 +256,7 @@ def _poll_session_status(client: KSeFClient, session_ref: str, invoice_ref: str)
 def status(
     reference: str = typer.Argument(..., help="Invoice reference number"),
     session_ref: Optional[str] = typer.Option(None, "--session", "-s", help="Session reference number"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON for agent use"),
 ) -> None:
     """Check the processing status of a sent invoice."""
     session_token = config.require_session()
@@ -232,8 +268,20 @@ def status(
             else:
                 result = client.session_status(reference)
         except KSeFError as exc:
-            err_console.print(f"[red]{exc}[/red]")
+            if json_output:
+                print(json.dumps({"error": str(exc)}), file=sys.stderr)
+            else:
+                err_console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1)
+
+    if json_output:
+        ksef_number = result.get("ksefNumber") or result.get("elementReferenceNumber") or None
+        print(json.dumps({
+            "processingCode": result.get("processingCode") if result.get("processingCode") is not None else None,
+            "processingDescription": result.get("processingDescription") or None,
+            "ksefNumber": ksef_number,
+        }))
+        return
 
     table = Table(title=f"Invoice Status: {reference}", show_header=False)
     table.add_column("Field", style="bold")
