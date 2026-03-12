@@ -100,7 +100,10 @@ def send(
         try:
             pk_resp = client.get_public_key()
         except KSeFError as exc:
-            err_console.print(f"[red]Failed to fetch public key: {exc}[/red]")
+            if json_output:
+                print(json.dumps({"error": str(exc)}), file=sys.stderr)
+            else:
+                err_console.print(f"[red]Failed to fetch public key: {exc}[/red]")
             raise typer.Exit(1)
 
         public_key_pem = _extract_public_key(pk_resp, usage="SymmetricKeyEncryption")
@@ -108,7 +111,10 @@ def send(
             # Fallback: try token encryption key
             public_key_pem = _extract_public_key(pk_resp, usage="KsefTokenEncryption")
         if not public_key_pem:
-            err_console.print("[red]Could not extract public key from API response.[/red]")
+            if json_output:
+                print(json.dumps({"error": "Could not extract public key from API response."}), file=sys.stderr)
+            else:
+                err_console.print("[red]Could not extract public key from API response.[/red]")
             raise typer.Exit(1)
 
         # Step 2: Generate session encryption keys
@@ -128,12 +134,18 @@ def send(
                 },
             )
         except KSeFError as exc:
-            err_console.print(f"[red]Failed to open session: {exc}[/red]")
+            if json_output:
+                print(json.dumps({"error": str(exc)}), file=sys.stderr)
+            else:
+                err_console.print(f"[red]Failed to open session: {exc}[/red]")
             raise typer.Exit(1)
 
         session_ref = session_resp.get("referenceNumber", "")
         if not session_ref:
-            err_console.print(f"[red]No session reference in response: {session_resp}[/red]")
+            if json_output:
+                print(json.dumps({"error": f"No session reference in response: {session_resp}"}), file=sys.stderr)
+            else:
+                err_console.print(f"[red]No session reference in response: {session_resp}[/red]")
             raise typer.Exit(1)
 
         if not json_output:
@@ -162,7 +174,10 @@ def send(
         try:
             send_resp = client.send_invoice_in_session(session_ref, invoice_payload)
         except KSeFError as exc:
-            err_console.print(f"[red]Send failed: {exc}[/red]")
+            if json_output:
+                print(json.dumps({"error": str(exc)}), file=sys.stderr)
+            else:
+                err_console.print(f"[red]Send failed: {exc}[/red]")
             # Try to close session even on failure
             try:
                 client.close_session(session_ref)
@@ -181,7 +196,8 @@ def send(
             if not json_output:
                 console.print(f"[dim]Session closed.[/dim]")
         except KSeFError as exc:
-            err_console.print(f"[yellow]Warning: session close failed: {exc}[/yellow]")
+            if not json_output:
+                err_console.print(f"[yellow]Warning: session close failed: {exc}[/yellow]")
 
         # Step 8: Poll for status + emit result
         final_ksef_number = None
@@ -190,9 +206,11 @@ def send(
         if wait and invoice_ref:
             if json_output:
                 poll_result = _poll_session_status_json(client, session_ref, invoice_ref)
-                if poll_result:
+                if poll_result and "_error" not in poll_result:
                     final_ksef_number = poll_result.get("ksefNumber")
                     final_code = poll_result.get("processingCode")
+                elif poll_result and "_error" in poll_result:
+                    print(json.dumps({"error": f"Poll failed: {poll_result['_error']}"}), file=sys.stderr)
             else:
                 _poll_session_status(client, session_ref, invoice_ref)
 
@@ -205,13 +223,13 @@ def send(
 
 
 def _poll_session_status_json(client: KSeFClient, session_ref: str, invoice_ref: str) -> dict | None:
-    """Poll invoice status and return the final result dict (or None on timeout/error)."""
+    """Poll invoice status and return the final result dict, or None on timeout, or {"_error": str} on API error."""
     start = time.time()
     while time.time() - start < POLL_TIMEOUT:
         try:
             result = client.invoice_status_in_session(session_ref, invoice_ref)
-        except KSeFError:
-            return None
+        except KSeFError as exc:
+            return {"_error": str(exc)}
         code = result.get("processingCode", 0)
         if code == 200 or code >= 400:
             return result
@@ -277,7 +295,7 @@ def status(
     if json_output:
         ksef_number = result.get("ksefNumber") or result.get("elementReferenceNumber") or None
         print(json.dumps({
-            "processingCode": result.get("processingCode") if result.get("processingCode") is not None else None,
+            "processingCode": result.get("processingCode"),
             "processingDescription": result.get("processingDescription") or None,
             "ksefNumber": ksef_number,
         }))
