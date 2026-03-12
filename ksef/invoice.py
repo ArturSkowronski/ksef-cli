@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import sys
 import time
 from pathlib import Path
@@ -297,6 +298,7 @@ def list_invoices(
     date_to: Optional[str] = typer.Option(None, "--date-to", help="End date YYYY-MM-DD"),
     seller_nip: Optional[str] = typer.Option(None, "--seller-nip", help="Filter by seller NIP"),
     received: bool = typer.Option(False, "--received", "-r", help="List received invoices (subject2) instead of issued"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON for agent use"),
 ) -> None:
     """List invoices in the KSeF system (synchronous query)."""
     session_token = config.require_session()
@@ -339,6 +341,31 @@ def list_invoices(
                 break
             payload["continuationToken"] = continuation
 
+    if json_output:
+        result_list = []
+        for inv in all_invoices:
+            ksef_nr = inv.get("ksefNumber") or inv.get("ksefReferenceNumber") or ""
+            inv_nr = inv.get("invoiceNumber") or inv.get("invoiceReferenceNumber") or ""
+            date_val = (inv.get("issueDate") or inv.get("acquisitionTimestamp") or "")[:10]
+            buyer = inv.get("buyer", {}).get("name", "") if isinstance(inv.get("buyer"), dict) else ""
+            seller = inv.get("seller", {}).get("name", "") if isinstance(inv.get("seller"), dict) else ""
+            net = inv.get("netAmount") or inv.get("net") or ""
+            gross = inv.get("grossAmount") or inv.get("gross") or ""
+            result_list.append({
+                "ksefNumber": ksef_nr,
+                "invoiceNumber": inv_nr,
+                "issueDate": date_val,
+                "buyer": buyer,
+                "seller": seller,
+                "netAmount": str(net),
+                "grossAmount": str(gross),
+                "currency": inv.get("currency", "PLN"),
+            })
+        print(json.dumps({"invoices": result_list}))
+        return
+
+    # IMPORTANT: this empty-list check must stay AFTER the json_output branch above,
+    # so that --json always emits {"invoices": []} even when the list is empty.
     if not all_invoices:
         console.print("[dim]No invoices found for the given period.[/dim]")
         return
