@@ -1,138 +1,206 @@
-# ksef-cli
+# 🇵🇱 KSEF CLI - Narzędzie CLI do obsługi Krajowego Systemu e-Faktur (KSeF) - dla ludzi i agentów AI.
 
-Command-line client for the Polish National e-Invoice System (KSeF / Krajowy System e-Faktur).
+![ksef-cli demo](example.gif)
 
-## Features
+Od 2026 roku każda polska faktura B2B musi przejść przez KSeF: zostać zaszyfrowana, przesłana przez sesyjne API i odebrana z numerem referencyjnym. Brzmi skomplikowanie, bo jest skomplikowane. `ksef-cli` chowa całą tę złożoność za prostymi komendami.
 
-- Authenticate with the KSeF production API
-- Generate KSeF-compliant FA(2) XML invoices from PDF/image files using OCR + Claude AI
-- Send invoices directly to KSeF and poll for processing status
-- Download and list invoices
-- Secure credential storage (`~/.ksef/config.toml`, permissions 600)
+Podajesz XML - albo nawet skan PDF — a narzędzie zajmuje się resztą: uwierzytelnianiem RSA-OAEP, szyfrowaniem sesji AES-256-CBC, budowaniem FA(3) XML, wysyłką i pollingiem statusu. Jeśli PDF jest nieczytelny dla parsera, wchodzi Claude AI i wyciąga pola faktury multimodalnie.
 
-## Installation
+Projekt jest też w pełni przystosowany do użycia przez **agentów AI**: każda kluczowa komenda obsługuje flagę `--json` z czystym JSON-em na stdout i ustrukturyzowanymi błędami na stderr. Dołączony [skill dla Claude Code](skills/ksef-cli/SKILL.md) pozwala agentowi natychmiast nauczyć się całego API narzędzia — bez dokumentacji, bez zgadywania.
+
+---
+
+## Instalacja
 
 ```bash
+git clone https://github.com/ArturSkowronski/ksef-cli
+cd ksef-cli
 pip install -e ".[dev]"
 ```
 
-Requires Python 3.11+.
+Wymagany **Python 3.11+**.
 
-## Configuration
-
-Set credentials without authenticating:
-
-```bash
-ksef config set --nip 1234567890 --token <YOUR_KSEF_TOKEN>
-ksef config show
-```
-
-For Claude AI fallback extraction, set your Anthropic API key:
+Dla ekstrakcji wspomaganej AI, ustaw klucz Anthropic:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-## Authentication
+---
+
+## Pierwsze kroki
+
+Zapisz dane uwierzytelniające raz:
 
 ```bash
-# Log in (performs challenge/response auth against KSeF)
-ksef auth login --nip 1234567890 --token <YOUR_KSEF_TOKEN>
-
-# Check session status
-ksef auth status
-
-# Log out
-ksef auth logout
+ksef config set --nip 1234567890 --token <TWÓJ_TOKEN_KSEF>
 ```
 
-## Invoice Commands
-
-### Generate XML (no send)
+Zaloguj się (przeprowadza pełny flow challenge/response KSeF i zapisuje token sesji):
 
 ```bash
-# From PDF
-ksef invoice generate invoice.pdf --out invoice.xml
-
-# From image
-ksef invoice generate scan.png --out invoice.xml
-
-# From existing XML (passthrough validation)
-ksef invoice generate existing.xml --out validated.xml
-
-# Print to stdout
-ksef invoice generate invoice.pdf
+ksef auth login
 ```
 
-### Send Invoice
+Gotowe. Wyślij pierwszą fakturę:
 
 ```bash
-# Send XML directly
-ksef invoice send invoice.xml
-
-# Send PDF (auto-generates XML first)
-ksef invoice send invoice.pdf
-
-# Send without waiting for processing
-ksef invoice send invoice.xml --no-wait
+ksef invoice send faktura.xml
 ```
 
-### Check Status
+To wszystko. `ksef-cli` otwiera zaszyfrowaną sesję, przesyła fakturę, zamyka sesję i czeka na potwierdzenie z KSeF. Dostajesz numer referencyjny KSeF gdy wszystko się zakończy.
+
+---
+
+## Uwierzytelnianie
+
+KSeF używa wieloetapowego flow: challenge → zaszyfrowany token RSA → token dostępu + token odświeżania. `ksef-cli` obsługuje to transparentnie.
 
 ```bash
-ksef invoice status <reference-number>
+ksef auth login             # pełny flow, zapisuje sesję
+ksef auth status            # pokaż wygaśnięcie sesji i tokeny
+ksef auth refresh           # odśwież token dostępu
+ksef auth logout            # wyczyść lokalne tokeny sesji
 ```
 
-### Download Invoice
+Sesje wygasają po około godzinie. Token odświeżania jest ważny 24 godziny. Użyj `ksef auth refresh` żeby przedłużyć sesję bez ponownego podawania danych.
+
+---
+
+## Praca z fakturami
+
+### Z PDF lub zdjęcia do KSeF jedną komendą
 
 ```bash
-ksef invoice get <reference-number> --out downloaded.xml
+ksef invoice send faktura.pdf
 ```
 
-### List Invoices
+Narzędzie wyciąga pola faktury z PDF, buduje XML zgodny z FA(3) i wysyła go. Jeśli parser heurystyczny nie jest pewny (poniżej 50%), przełącza się na analizę multimodalną Claude AI. Przy niskim poziomie pewności zobaczysz ostrzeżenie — sprawdź wygenerowany XML przed wysłaniem.
+
+### Wyślij XML bezpośrednio
 
 ```bash
-# Current month
-ksef invoice list
+ksef invoice send faktura.xml             # wyślij i czekaj na przetworzenie
+ksef invoice send faktura.xml --no-wait   # wyślij bez czekania
+```
 
-# Custom date range
+### Podgląd przed wysłaniem
+
+Konwertuj do XML bez wysyłania:
+
+```bash
+ksef invoice generate faktura.pdf --out faktura.xml
+ksef invoice generate faktura.pdf          # wypisz na stdout
+```
+
+### Śledzenie i pobieranie
+
+```bash
+ksef invoice status <numer-referencyjny>                      # sprawdź status
+ksef invoice get <numer-ksef> --out faktura.xml               # pobierz XML
+ksef invoice get <numer-ksef> --pdf --out faktura.pdf         # wyrenderuj jako PDF
+```
+
+### Lista faktur
+
+```bash
+ksef invoice list                                              # bieżący miesiąc
 ksef invoice list --date-from 2024-01-01 --date-to 2024-01-31
+ksef invoice list --received                                   # faktury do Ciebie
+ksef invoice list --seller-nip 9876543210                      # filtruj po sprzedawcy
 ```
 
-## How Invoice Extraction Works
+---
 
-1. **PDF with text layer**: pdfplumber extracts text; heuristic parser finds invoice fields
-2. **Low-confidence or image-only**: Claude API (`claude-opus-4-6`) extracts fields via multimodal analysis
-3. **Existing XML**: passed through as-is
+## Dla agentów AI i automatyzacji
 
-If extraction confidence is below 50%, the tool warns you and recommends reviewing the generated XML before sending.
-
-## Development
+Każda kluczowa komenda obsługuje flagę `--json`. Żadnego Rich markup, żadnych interaktywnych promptów — tylko czysty JSON na stdout i `{"error": "..."}` na stderr z niezerowym exit code przy błędzie.
 
 ```bash
-# Run tests
-pytest tests/ -v
+# Sprawdź sesję przed jakąkolwiek operacją
+ksef auth status --json
+# → {"nip": "1234567890", "environment": "PRD", "sessionActive": true, "expiresIn": 3542, "expiry": "..."}
 
-# Install with dev dependencies
-pip install -e ".[dev]"
+# Lista faktur
+ksef invoice list --json
+# → {"invoices": [{"ksefNumber": "...", "invoiceNumber": "...", "buyer": "Acme Sp. z o.o.", "netAmount": "1000.00", ...}]}
+
+# Wyślij i odbierz numer KSeF
+ksef invoice send faktura.xml --json
+# → {"invoiceRef": "...", "ksefNumber": "KSeF/123/2024", "processingCode": 200}
+
+# Wysyłka nieblokująca
+ksef invoice send faktura.xml --no-wait --json
+# → {"invoiceRef": "...", "ksefNumber": null, "processingCode": null}
 ```
 
-## Project Structure
+### Skill dla Claude Code
+
+W katalogu [`skills/ksef-cli/`](skills/ksef-cli/) znajduje się skill dla agentów Claude Code. Po załadowaniu agent wie jak sprawdzić sesję, wywołać każdą komendę, sparsować odpowiedź JSON i obsłużyć błędy — bez żadnego zgadywania.
+
+Żeby udostępnić skill lokalnie:
+
+```bash
+ln -s $(pwd)/skills/ksef-cli ~/.claude/skills/ksef-cli
+```
+
+---
+
+## Konfiguracja
+
+```bash
+ksef config set --nip 1234567890 --token <TOKEN>
+ksef config set --environment TEST    # PRD (domyślnie) | TEST | DEMO
+ksef config show                      # tokeny są maskowane
+```
+
+Konfiguracja przechowywana w `~/.ksef/config.toml` z uprawnieniami 600. Dane uwierzytelniające nigdy nie pojawiają się w logach ani w outputcie.
+
+---
+
+## Jak działa flow sesji KSeF
+
+KSeF v2 wymaga przesyłania faktur wewnątrz zaszyfrowanej sesji:
+
+1. Pobierz certyfikat klucza publicznego KSeF
+2. Wygeneruj świeży klucz AES-256 + wektor inicjalizacyjny
+3. Zaszyfruj klucz AES algorytmem RSA-OAEP kluczem publicznym KSeF
+4. Otwórz sesję (`POST /sessions/online`) z zaszyfrowanym kluczem
+5. Zaszyfruj XML faktury algorytmem AES-256-CBC
+6. Prześlij zaszyfrowaną fakturę w ramach sesji
+7. Zamknij sesję
+8. Czekaj na status przetworzenia (kod 200 = zaakceptowano)
+
+`ksef-cli` przeprowadza cały ten flow automatycznie. Ty dostarczasz tylko XML (albo PDF).
+
+---
+
+## Rozwój
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v          # 55 testów
+```
 
 ```
 ksef/
-├── main.py        # CLI entry point
-├── config.py      # Config file management (~/.ksef/config.toml)
-├── client.py      # KSeF API HTTP client
-├── auth.py        # Authentication commands
-├── invoice.py     # Invoice commands
-├── extractor.py   # PDF/image → invoice data
-├── xml_builder.py # Invoice data → FA(2) XML
-└── models.py      # Pydantic data models
+├── main.py         # punkt wejścia CLI (Typer)
+├── config.py       # konfiguracja (~/.ksef/config.toml)
+├── client.py       # klient HTTP KSeF API (httpx)
+├── auth.py         # komendy auth + szyfrowanie RSA-OAEP
+├── invoice.py      # komendy faktur
+├── crypto.py       # pomocniki AES-256-CBC + RSA-OAEP
+├── extractor.py    # PDF/obraz → InvoiceData (pdfplumber + Claude)
+├── xml_builder.py  # InvoiceData → XML FA(3)
+├── models.py       # modele Pydantic
+├── pdf_renderer.py # XML → PDF
+└── tui.py          # interaktywny dashboard TUI
+
+skills/ksef-cli/SKILL.md   # skill dla agentów Claude Code
 ```
 
-## KSeF API
+---
 
-This tool targets the **production** KSeF API at `https://ksef.mf.gov.pl`.
+## Licencja
 
-The FA(2) schema namespace: `http://crd.gov.pl/wzor/2023/06/29/12648/`
+MIT
