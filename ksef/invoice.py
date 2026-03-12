@@ -347,10 +347,12 @@ def list_invoices(
             ksef_nr = inv.get("ksefNumber") or inv.get("ksefReferenceNumber") or ""
             inv_nr = inv.get("invoiceNumber") or inv.get("invoiceReferenceNumber") or ""
             date_val = (inv.get("issueDate") or inv.get("acquisitionTimestamp") or "")[:10]
-            buyer = inv.get("buyer", {}).get("name", "") if isinstance(inv.get("buyer"), dict) else ""
-            seller = inv.get("seller", {}).get("name", "") if isinstance(inv.get("seller"), dict) else ""
-            net = inv.get("netAmount") or inv.get("net") or ""
-            gross = inv.get("grossAmount") or inv.get("gross") or ""
+            _buyer = inv.get("buyer")
+            buyer = _buyer.get("name", "") if isinstance(_buyer, dict) else (_buyer if isinstance(_buyer, str) else "")
+            _seller = inv.get("seller")
+            seller = _seller.get("name", "") if isinstance(_seller, dict) else (_seller if isinstance(_seller, str) else "")
+            net = inv.get("netAmount") if inv.get("netAmount") is not None else inv.get("net", "")
+            gross = inv.get("grossAmount") if inv.get("grossAmount") is not None else inv.get("gross", "")
             result_list.append({
                 "ksefNumber": ksef_nr,
                 "invoiceNumber": inv_nr,
