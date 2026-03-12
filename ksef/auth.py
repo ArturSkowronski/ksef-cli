@@ -12,6 +12,7 @@ KSeF API 2.0 token-based authentication flow:
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -292,25 +293,57 @@ def logout() -> None:
 
 
 @app.command()
-def status() -> None:
+def status(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON for agent use"),
+) -> None:
     """Show current session info."""
     cfg = config.load()
 
+    nip = cfg.get("nip") or ""
+    environment = cfg.get("environment", "PRD")
+    session_token = cfg.get("session_token", "")
+    expiry = cfg.get("session_expiry", "")
+    refresh_token_val = cfg.get("refresh_token", "")
+
+    # Compute sessionActive and expiresIn
+    session_active = False
+    expires_in = 0
+    if session_token and expiry:
+        try:
+            exp_dt = datetime.fromisoformat(expiry)
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            if now < exp_dt:
+                session_active = True
+                expires_in = max(0, int((exp_dt - now).total_seconds()))
+        except ValueError:
+            pass
+
+    if json_output:
+        print(json.dumps({
+            "nip": nip,
+            "environment": environment,
+            "sessionActive": session_active,
+            "expiresIn": expires_in,
+            "expiry": expiry or None,
+        }))
+        return
+
+    # Original Rich table output (unchanged)
     table = Table(title="KSeF Session Status", show_header=False)
     table.add_column("Field", style="bold")
     table.add_column("Value")
 
-    table.add_row("NIP", cfg.get("nip") or "[dim]not set[/dim]")
-    table.add_row("Environment", cfg.get("environment", "PRD"))
+    table.add_row("NIP", nip or "[dim]not set[/dim]")
+    table.add_row("Environment", environment)
 
-    session_token = cfg.get("session_token", "")
     if session_token:
         masked = session_token[:8] + "..." + session_token[-4:]
         table.add_row("Access Token", masked)
     else:
         table.add_row("Access Token", "[dim]none[/dim]")
 
-    expiry = cfg.get("session_expiry", "")
     if expiry:
         try:
             exp_dt = datetime.fromisoformat(expiry)
@@ -330,7 +363,6 @@ def status() -> None:
     else:
         table.add_row("Expiry", "[dim]none[/dim]")
 
-    refresh_token_val = cfg.get("refresh_token", "")
     if refresh_token_val:
         table.add_row("Refresh Token", refresh_token_val[:8] + "..." + refresh_token_val[-4:])
         table.add_row("Refresh Expiry", cfg.get("refresh_expiry", "[dim]unknown[/dim]"))
