@@ -39,8 +39,36 @@ ksef-cli currently outputs human-readable Rich tables and colored text. Agents (
 ### Implementation
 
 Each command gains a `json_output: bool = typer.Option(False, "--json", ...)` parameter.
+**The parameter must be named `json_output`, not `json`** — `json` is a stdlib module that needs to be imported.
 In the `--json` branch, skip all `console.print()` calls and instead call `print(json.dumps(data))`.
 Import `json` at top of each module that needs it.
+
+When `--json` is active, XSD validation warnings are suppressed (not emitted to stderr).
+When `--json` is active, errors go to **stderr** as `{"error": "message"}` with exit code 1. Without `--json`, stderr behaviour is unchanged (Rich markup).
+
+#### `invoice send --json` with `--no-wait`
+
+When `--no-wait`, no `ksefNumber` or `processingCode` is available at send time. Output shape:
+- With `--wait` (default): `{"invoiceRef": "...", "ksefNumber": "...", "processingCode": 200}`
+- With `--no-wait`: `{"invoiceRef": "...", "ksefNumber": null, "processingCode": null}`
+
+#### `invoice status --json`
+
+The `status` command has two paths:
+- Without `--session`: calls `session_status(reference)` — returns full processing info
+- With `--session <ref>`: calls `invoice_status_in_session(session_ref, reference)` — returns session-scoped status
+
+Both paths use the same JSON output shape: `{"processingCode": int, "processingDescription": "...", "ksefNumber": "..."}`. Missing fields default to `null`.
+
+#### `auth status --json`
+
+`sessionActive` is `true` when: session_token is non-empty AND expiry is parseable AND expiry > now. If expiry is missing or unparseable, `sessionActive` is `false`.
+
+`expiresIn` is in **seconds** (integer), computed as `max(0, int((expiry_dt - now).total_seconds()))`.
+
+#### `invoice list --json`
+
+`buyer` and `seller` fields in each invoice object are **strings** (the counterparty name extracted from `inv["buyer"]["name"]` or `inv["seller"]["name"]`), not nested objects.
 
 ---
 
@@ -67,7 +95,7 @@ description: Use when an agent needs to interact with the Polish KSeF e-invoice 
 
 ### Size constraint
 
-Target: <400 words total to keep token cost low.
+Target: <500 words total. JSON response examples in the skill are abbreviated (key fields only); the full spec doc is the authoritative reference for exact shapes.
 
 ---
 
