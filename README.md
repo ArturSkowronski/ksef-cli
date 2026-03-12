@@ -1,5 +1,7 @@
 # ksef-cli
 
+![ksef-cli demo](example.gif)
+
 > Klient wiersza poleceń dla Krajowego Systemu e-Faktur (KSeF). Wysyłaj, odbieraj i zarządzaj e-fakturami z terminala — albo oddaj to swojemu agentowi AI.
 
 KSeF wymaga, żeby każda faktura była przesłana jako podpisany kryptograficznie dokument XML przez szyfrowane sesyjnie API. `ksef-cli` bierze to wszystko na siebie: uwierzytelnianie RSA-OAEP, szyfrowanie sesji AES-256-CBC, generowanie XML FA(3) i polling statusu — opakowane w jedną komendę.
