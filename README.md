@@ -2,13 +2,13 @@
 
 ![ksef-cli demo](example.gif)
 
-> Klient wiersza poleceń dla Krajowego Systemu e-Faktur (KSeF). Wysyłaj, odbieraj i zarządzaj e-fakturami z terminala — albo oddaj to swojemu agentowi AI.
+**Narzędzie CLI do obsługi Krajowego Systemu e-Faktur (KSeF) — dla ludzi i agentów AI.**
 
-KSeF wymaga, żeby każda faktura była przesłana jako podpisany kryptograficznie dokument XML przez szyfrowane sesyjnie API. `ksef-cli` bierze to wszystko na siebie: uwierzytelnianie RSA-OAEP, szyfrowanie sesji AES-256-CBC, generowanie XML FA(3) i polling statusu — opakowane w jedną komendę.
+Od 2026 roku każda polska faktura B2B musi przejść przez KSeF: zostać zaszyfrowana, przesłana przez sesyjne API i odebrana z numerem referencyjnym. Brzmi skomplikowanie, bo jest skomplikowane. `ksef-cli` chowa całą tę złożoność za prostymi komendami.
 
-Możesz też podać skan PDF — narzędzie wyciągnie pola faktury, zbuduje XML i wyśle go do KSeF, korzystając z Claude AI gdy parser heurystyczny nie jest wystarczająco pewny.
+Podajesz XML — albo nawet skan PDF — a narzędzie zajmuje się resztą: uwierzytelnianiem RSA-OAEP, szyfrowaniem sesji AES-256-CBC, budowaniem FA(3) XML, wysyłką i pollingiem statusu. Jeśli PDF jest nieczytelny dla parsera, wchodzi Claude AI i wyciąga pola faktury multimodalnie.
 
-Projekt obsługuje tryb agentyczny: wszystkie kluczowe komendy mają flagę `--json`, co pozwala na użycie `ksef-cli` jako narzędzia przez agentów AI (Claude Code, automatyzacje, skrypty CI). Dołączony skill [`skills/ksef-cli/SKILL.md`](skills/ksef-cli/SKILL.md) pozwala agentowi Claude natychmiast nauczyć się jak używać narzędzia.
+Projekt jest też w pełni przystosowany do użycia przez **agentów AI**: każda kluczowa komenda obsługuje flagę `--json` z czystym JSON-em na stdout i ustrukturyzowanymi błędami na stderr. Dołączony [skill dla Claude Code](skills/ksef-cli/SKILL.md) pozwala agentowi natychmiast nauczyć się całego API narzędzia — bez dokumentacji, bez zgadywania.
 
 ---
 
