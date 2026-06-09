@@ -64,6 +64,16 @@ ksef invoice get KSeF_NUMBER --out invoice.xml    # save XML
 ksef invoice get KSeF_NUMBER --pdf --out inv.pdf  # save as PDF
 ```
 
+### Batch Download (whole period as PDFs)
+```bash
+ksef invoice download --json                      # previous month, issued, PDFs → ./invoices-YYYY-MM/
+ksef invoice download --month 2026-04 --json      # specific month
+ksef invoice download --all --json                # issued + received, deduped
+ksef invoice download --format both -o DIR --json # XML + PDF into DIR
+# → {"outDir": "invoices-2026-05", "downloaded": [{"ksefNumber": "...", "files": ["..."]}], "failed": []}
+# Partial failures exit 0 with entries in "failed"; exit 1 only if everything failed.
+```
+
 ### Generate XML (no send)
 ```bash
 ksef invoice generate invoice.pdf --out invoice.xml

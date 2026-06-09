@@ -389,23 +389,12 @@ def list_invoices(
     if seller_nip:
         payload["sellerNip"] = seller_nip
 
-    all_invoices: list = []
     with KSeFClient(access_token=session_token) as client:
-        while True:
-            try:
-                result = client.query_invoice_metadata(payload)
-            except KSeFError as exc:
-                err_console.print(f"[red]{exc}[/red]")
-                raise typer.Exit(1)
-
-            invoices = result.get("invoices", result.get("invoiceHeaderList", []))
-            all_invoices.extend(invoices)
-
-            has_more = result.get("hasMore", False)
-            continuation = result.get("_continuationToken")
-            if not has_more or not continuation:
-                break
-            payload["continuationToken"] = continuation
+        try:
+            all_invoices = _fetch_all_metadata(client, payload)
+        except KSeFError as exc:
+            err_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
 
     if json_output:
         result_list = []
@@ -468,8 +457,176 @@ def list_invoices(
 
 
 # ---------------------------------------------------------------------------
+# download (batch download + local PDF rendering)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def download(
+    month: Optional[str] = typer.Option(None, "--month", "-m", help="Month YYYY-MM (default: previous month)"),
+    date_from: Optional[str] = typer.Option(None, "--date-from", help="Start date YYYY-MM-DD (overrides --month)"),
+    date_to: Optional[str] = typer.Option(None, "--date-to", help="End date YYYY-MM-DD (overrides --month)"),
+    received: bool = typer.Option(False, "--received", "-r", help="Received invoices (subject2) instead of issued"),
+    all_subjects: bool = typer.Option(False, "--all", "-a", help="Both issued and received invoices"),
+    out_dir: Optional[Path] = typer.Option(None, "--out-dir", "-o", help="Output directory (default: ./invoices-YYYY-MM)"),
+    file_format: str = typer.Option("pdf", "--format", "-f", help="Output format: pdf, xml, or both"),
+    json_output: bool = typer.Option(False, "--json", help="Output summary as JSON for agent use"),
+) -> None:
+    """Download all invoices for a period (default: previous month) and render PDFs."""
+    if file_format not in ("pdf", "xml", "both"):
+        err_console.print("[red]--format must be pdf, xml, or both.[/red]")
+        raise typer.Exit(1)
+
+    try:
+        range_from, range_to, period_label = _resolve_period(month, date_from, date_to)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    session_token = config.require_session()
+
+    if out_dir is None:
+        out_dir = Path(f"invoices-{period_label}")
+
+    subjects = ["subject1", "subject2"] if all_subjects else (["subject2"] if received else ["subject1"])
+
+    downloaded: list[dict] = []
+    failed: list[dict] = []
+
+    with KSeFClient(access_token=session_token) as client:
+        invoices: list[dict] = []
+        seen: set[str] = set()
+        for subject in subjects:
+            payload = {
+                "subjectType": subject,
+                "dateRange": {
+                    "dateType": "invoicing",
+                    "from": f"{range_from}T00:00:00.000Z",
+                    "to": f"{range_to}T23:59:59.999Z",
+                },
+            }
+            try:
+                results = _fetch_all_metadata(client, payload)
+            except KSeFError as exc:
+                err_console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(1)
+            for inv in results:
+                ksef_nr = inv.get("ksefNumber") or inv.get("ksefReferenceNumber") or ""
+                if ksef_nr and ksef_nr not in seen:
+                    seen.add(ksef_nr)
+                    invoices.append(inv)
+
+        if not invoices:
+            if json_output:
+                print(json.dumps({"outDir": str(out_dir), "downloaded": [], "failed": []}))
+            else:
+                console.print(f"[dim]No invoices found for {period_label}.[/dim]")
+            return
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        for inv in invoices:
+            ksef_nr = inv.get("ksefNumber") or inv.get("ksefReferenceNumber") or ""
+            safe_name = _sanitise_filename(ksef_nr)
+
+            try:
+                xml_bytes = client.get_invoice_by_ksef(ksef_nr)
+            except KSeFError as exc:
+                failed.append({"ksefNumber": ksef_nr, "error": str(exc)})
+                if not json_output:
+                    err_console.print(f"[red]Failed to download {ksef_nr}: {exc}[/red]")
+                continue
+
+            files: list[str] = []
+            if file_format in ("xml", "both"):
+                xml_path = out_dir / f"{safe_name}.xml"
+                xml_path.write_bytes(xml_bytes)
+                files.append(str(xml_path))
+
+            if file_format in ("pdf", "both"):
+                from .pdf_renderer import render_invoice_pdf
+                try:
+                    pdf_bytes = render_invoice_pdf(xml_bytes)
+                except Exception as exc:
+                    failed.append({"ksefNumber": ksef_nr, "error": f"PDF rendering failed: {exc}"})
+                    if not json_output:
+                        err_console.print(f"[red]PDF rendering failed for {ksef_nr}: {exc}[/red]")
+                    continue
+                pdf_path = out_dir / f"{safe_name}.pdf"
+                pdf_path.write_bytes(pdf_bytes)
+                files.append(str(pdf_path))
+
+            downloaded.append({"ksefNumber": ksef_nr, "files": files})
+            if not json_output:
+                console.print(f"  [green]{ksef_nr}[/green] → {', '.join(Path(f).name for f in files)}")
+
+    if json_output:
+        print(json.dumps({
+            "outDir": str(out_dir),
+            "downloaded": downloaded,
+            "failed": failed,
+        }))
+    else:
+        console.print(f"[green]Saved {len(downloaded)} invoice(s) to {out_dir}[/green]")
+        if failed:
+            err_console.print(f"[yellow]{len(failed)} invoice(s) failed.[/yellow]")
+
+    if failed and not downloaded:
+        raise typer.Exit(1)
+
+
+def _resolve_period(
+    month: Optional[str], date_from: Optional[str], date_to: Optional[str]
+) -> tuple[str, str, str]:
+    """Return (from_date, to_date, label) as ISO date strings for the query range."""
+    import calendar
+    from datetime import date as date_type
+
+    if date_from and date_to:
+        return date_from, date_to, f"{date_from}_{date_to}"
+
+    if month:
+        try:
+            year_s, month_s = month.split("-")
+            year, month_n = int(year_s), int(month_s)
+            if not 1 <= month_n <= 12:
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"Invalid month '{month}', expected YYYY-MM.")
+    else:
+        today = date_type.today()
+        year = today.year if today.month > 1 else today.year - 1
+        month_n = today.month - 1 or 12
+
+    last_day = calendar.monthrange(year, month_n)[1]
+    label = f"{year:04d}-{month_n:02d}"
+    return f"{label}-01", f"{label}-{last_day:02d}", label
+
+
+def _sanitise_filename(name: str) -> str:
+    """Replace path-hostile characters so a KSeF number is safe as a filename."""
+    import re
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _fetch_all_metadata(client: KSeFClient, payload: dict) -> list[dict]:
+    """Run a metadata query, following continuation tokens until exhausted."""
+    all_invoices: list[dict] = []
+    while True:
+        result = client.query_invoice_metadata(payload)
+        invoices = result.get("invoices", result.get("invoiceHeaderList", []))
+        all_invoices.extend(invoices)
+
+        has_more = result.get("hasMore", False)
+        continuation = result.get("_continuationToken")
+        if not has_more or not continuation:
+            return all_invoices
+        payload["continuationToken"] = continuation
 
 
 def _to_xml(file: Path) -> bytes:
