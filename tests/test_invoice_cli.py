@@ -31,7 +31,10 @@ def test_invoice_list_json_returns_invoices():
         mock_inst = MockClient.return_value.__enter__.return_value
         mock_inst.query_invoice_metadata.return_value = mock_result
 
-        result = runner.invoke(app, ["invoice", "list", "--json"])
+        result = runner.invoke(
+            app,
+            ["invoice", "list", "--json", "--date-from", "2024-01-01", "--date-to", "2024-01-31"],
+        )
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -43,6 +46,43 @@ def test_invoice_list_json_returns_invoices():
     assert inv["seller"] == "Sprzedający SA"
     assert inv["netAmount"] == "1000.00"
     assert inv["currency"] == "PLN"
+
+
+def test_invoice_list_queries_by_issue_date():
+    """list must filter by the invoice issue date, not the KSeF registration date."""
+    mock_result = {"invoices": [], "hasMore": False}
+
+    with patch("ksef.invoice.config.require_session", return_value="sess_tok"), \
+         patch("ksef.invoice.KSeFClient") as MockClient:
+        mock_inst = MockClient.return_value.__enter__.return_value
+        mock_inst.query_invoice_metadata.return_value = mock_result
+
+        result = runner.invoke(app, ["invoice", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = mock_inst.query_invoice_metadata.call_args[0][0]
+    assert payload["dateRange"]["dateType"] == "issue"
+
+
+def test_invoice_list_excludes_issue_date_outside_range():
+    """An invoice whose issue date is outside the requested range is dropped."""
+    out_of_range = {**_FAKE_INVOICE, "ksefNumber": "KSeF/999/2024", "issueDate": "2024-03-15"}
+    mock_result = {"invoices": [_FAKE_INVOICE, out_of_range], "hasMore": False}
+
+    with patch("ksef.invoice.config.require_session", return_value="sess_tok"), \
+         patch("ksef.invoice.KSeFClient") as MockClient:
+        mock_inst = MockClient.return_value.__enter__.return_value
+        mock_inst.query_invoice_metadata.return_value = mock_result
+
+        result = runner.invoke(
+            app,
+            ["invoice", "list", "--json", "--date-from", "2024-01-01", "--date-to", "2024-01-31"],
+        )
+
+    assert result.exit_code == 0, result.output
+    nums = [i["ksefNumber"] for i in json.loads(result.output)["invoices"]]
+    assert "KSeF/100/2024" in nums
+    assert "KSeF/999/2024" not in nums
 
 
 def test_invoice_list_json_empty():
@@ -70,7 +110,9 @@ def test_invoice_list_no_json_unchanged():
         mock_inst = MockClient.return_value.__enter__.return_value
         mock_inst.query_invoice_metadata.return_value = mock_result
 
-        result = runner.invoke(app, ["invoice", "list"])
+        result = runner.invoke(
+            app, ["invoice", "list", "--date-from", "2024-01-01", "--date-to", "2024-01-31"]
+        )
 
     assert result.exit_code == 0
     try:

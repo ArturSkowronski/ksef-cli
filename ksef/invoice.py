@@ -381,7 +381,7 @@ def list_invoices(
     payload: dict = {
         "subjectType": subject,
         "dateRange": {
-            "dateType": "invoicing",
+            "dateType": "issue",
             "from": f"{date_from}T00:00:00.000Z",
             "to": f"{date_to}T23:59:59.999Z",
         },
@@ -395,6 +395,11 @@ def list_invoices(
         except KSeFError as exc:
             err_console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1)
+
+    # KSeF buckets corrections by the corrected period, so an invoice whose own
+    # issue date falls outside the requested range can slip through. Enforce the
+    # issue-date window client-side.
+    all_invoices = [inv for inv in all_invoices if _issue_date_in_range(inv, date_from, date_to)]
 
     if json_output:
         result_list = []
@@ -467,7 +472,7 @@ def download(
     date_from: Optional[str] = typer.Option(None, "--date-from", help="Start date YYYY-MM-DD (overrides --month)"),
     date_to: Optional[str] = typer.Option(None, "--date-to", help="End date YYYY-MM-DD (overrides --month)"),
     received: bool = typer.Option(False, "--received", "-r", help="Received invoices (subject2) instead of issued"),
-    all_subjects: bool = typer.Option(False, "--all", "-a", help="Both issued and received invoices"),
+    all_subjects: bool = typer.Option(False, "--all", "-a", help="Both issued and received invoices, split into issued/ and received/ subdirectories"),
     out_dir: Optional[Path] = typer.Option(None, "--out-dir", "-o", help="Output directory (default: ./invoices-YYYY-MM)"),
     file_format: str = typer.Option("pdf", "--format", "-f", help="Output format: pdf, xml, or both"),
     json_output: bool = typer.Option(False, "--json", help="Output summary as JSON for agent use"),
@@ -489,18 +494,20 @@ def download(
         out_dir = Path(f"invoices-{period_label}")
 
     subjects = ["subject1", "subject2"] if all_subjects else (["subject2"] if received else ["subject1"])
+    subject_labels = {"subject1": "issued", "subject2": "received"}
+    split_dirs = len(subjects) > 1
 
     downloaded: list[dict] = []
     failed: list[dict] = []
 
     with KSeFClient(access_token=session_token) as client:
-        invoices: list[dict] = []
+        invoices: list[tuple[dict, str]] = []
         seen: set[str] = set()
         for subject in subjects:
             payload = {
                 "subjectType": subject,
                 "dateRange": {
-                    "dateType": "invoicing",
+                    "dateType": "issue",
                     "from": f"{range_from}T00:00:00.000Z",
                     "to": f"{range_to}T23:59:59.999Z",
                 },
@@ -512,9 +519,15 @@ def download(
                 raise typer.Exit(1)
             for inv in results:
                 ksef_nr = inv.get("ksefNumber") or inv.get("ksefReferenceNumber") or ""
-                if ksef_nr and ksef_nr not in seen:
-                    seen.add(ksef_nr)
-                    invoices.append(inv)
+                if not ksef_nr or ksef_nr in seen:
+                    continue
+                # KSeF buckets corrections by the corrected period, so an invoice
+                # whose own issue date falls outside the requested range can slip
+                # through. Enforce the issue-date window client-side.
+                if not _issue_date_in_range(inv, range_from, range_to):
+                    continue
+                seen.add(ksef_nr)
+                invoices.append((inv, subject_labels[subject]))
 
         if not invoices:
             if json_output:
@@ -525,9 +538,11 @@ def download(
 
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        for inv in invoices:
+        for inv, subject_label in invoices:
             ksef_nr = inv.get("ksefNumber") or inv.get("ksefReferenceNumber") or ""
             safe_name = _sanitise_filename(ksef_nr)
+            target_dir = out_dir / subject_label if split_dirs else out_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
 
             try:
                 xml_bytes = client.get_invoice_by_ksef(ksef_nr)
@@ -539,7 +554,7 @@ def download(
 
             files: list[str] = []
             if file_format in ("xml", "both"):
-                xml_path = out_dir / f"{safe_name}.xml"
+                xml_path = target_dir / f"{safe_name}.xml"
                 xml_path.write_bytes(xml_bytes)
                 files.append(str(xml_path))
 
@@ -552,13 +567,14 @@ def download(
                     if not json_output:
                         err_console.print(f"[red]PDF rendering failed for {ksef_nr}: {exc}[/red]")
                     continue
-                pdf_path = out_dir / f"{safe_name}.pdf"
+                pdf_path = target_dir / f"{safe_name}.pdf"
                 pdf_path.write_bytes(pdf_bytes)
                 files.append(str(pdf_path))
 
-            downloaded.append({"ksefNumber": ksef_nr, "files": files})
+            downloaded.append({"ksefNumber": ksef_nr, "subject": subject_label, "files": files})
             if not json_output:
-                console.print(f"  [green]{ksef_nr}[/green] → {', '.join(Path(f).name for f in files)}")
+                shown = ', '.join(str(Path(f).relative_to(out_dir)) for f in files)
+                console.print(f"  [green]{ksef_nr}[/green] → {shown}")
 
     if json_output:
         print(json.dumps({
@@ -601,6 +617,18 @@ def _resolve_period(
     last_day = calendar.monthrange(year, month_n)[1]
     label = f"{year:04d}-{month_n:02d}"
     return f"{label}-01", f"{label}-{last_day:02d}", label
+
+
+def _issue_date_in_range(inv: dict, range_from: str, range_to: str) -> bool:
+    """True if the invoice's issue date falls within [range_from, range_to].
+
+    Dates are ISO YYYY-MM-DD strings, so lexicographic comparison is correct.
+    An invoice with no issue date is kept rather than silently dropped.
+    """
+    issue_date = (inv.get("issueDate") or "")[:10]
+    if not issue_date:
+        return True
+    return range_from <= issue_date <= range_to
 
 
 def _sanitise_filename(name: str) -> str:

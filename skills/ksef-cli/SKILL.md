@@ -36,6 +36,7 @@ ksef auth status --json
 ```
 
 ### List Invoices
+Date filters match the invoice **issue date** (`data wystawienia`), not the KSeF registration date — an invoice issued on the 31st but sent to KSeF a few days later still counts for the issue month.
 ```bash
 ksef invoice list --json
 ksef invoice list --json --date-from 2024-01-01 --date-to 2024-01-31
@@ -65,12 +66,13 @@ ksef invoice get KSeF_NUMBER --pdf --out inv.pdf  # save as PDF
 ```
 
 ### Batch Download (whole period as PDFs)
+The period selects invoices by **issue date** (`data wystawienia`), so `--month 2026-06` gives everything issued in June regardless of when it was registered in KSeF. Corrections that KSeF buckets under a different period are excluded unless their own issue date falls in the range.
 ```bash
 ksef invoice download --json                      # previous month, issued, PDFs → ./invoices-YYYY-MM/
 ksef invoice download --month 2026-04 --json      # specific month
-ksef invoice download --all --json                # issued + received, deduped
+ksef invoice download --all --json                # issued + received, deduped → issued/ and received/ subdirs
 ksef invoice download --format both -o DIR --json # XML + PDF into DIR
-# → {"outDir": "invoices-2026-05", "downloaded": [{"ksefNumber": "...", "files": ["..."]}], "failed": []}
+# → {"outDir": "invoices-2026-05", "downloaded": [{"ksefNumber": "...", "subject": "issued", "files": ["..."]}], "failed": []}
 # Partial failures exit 0 with entries in "failed"; exit 1 only if everything failed.
 ```
 

@@ -41,9 +41,22 @@ def render_invoice_pdf(xml_bytes: bytes) -> bytes:
     buyer_nip = _t(_find(root, ".//fa:Podmiot2/fa:DaneIdentyfikacyjne/fa:NIP"))
     buyer_addr = _t(_find(root, ".//fa:Podmiot2/fa:Adres/fa:AdresL1"))
 
-    # Totals
-    net_total = _t(_find(root, ".//fa:Fa/fa:P_13_1"))
-    vat_total = _t(_find(root, ".//fa:Fa/fa:P_14_1"))
+    # Totals — FA(3) splits per VAT band: P_13_1..P_13_7 (net), P_14_1..P_14_7 (VAT)
+    def _sum_bands(prefix: str) -> str:
+        total = 0.0
+        seen = False
+        for i in range(1, 8):
+            v = _t(_find(root, f".//fa:Fa/fa:{prefix}_{i}"))
+            if v:
+                try:
+                    total += float(v)
+                    seen = True
+                except ValueError:
+                    pass
+        return f"{total:.2f}" if seen else ""
+
+    net_total = _sum_bands("P_13")
+    vat_total = _sum_bands("P_14")
     gross_total = _t(_find(root, ".//fa:Fa/fa:P_15"))
 
     # Line items
@@ -124,20 +137,30 @@ def render_invoice_pdf(xml_bytes: bytes) -> bytes:
         name = _t(row.find("fa:P_7", NS))
         unit = _t(row.find("fa:P_8A", NS))
         qty = _t(row.find("fa:P_8B", NS))
-        net_price = _t(row.find("fa:P_11", NS))
+        # FA(3) supports two pricing modes: net (P_9A unit price, P_11 line value)
+        # and gross (P_9B unit price, P_11A line value). Fall back across both.
+        line_val = _t(row.find("fa:P_11", NS)) or _t(row.find("fa:P_11A", NS))
+        unit_price = _t(row.find("fa:P_9A", NS)) or _t(row.find("fa:P_9B", NS))
+        if not unit_price and qty and line_val:
+            try:
+                q = float(qty)
+                if q:
+                    unit_price = f"{float(line_val) / q:.2f}"
+            except ValueError:
+                pass
         vat_rate = _t(row.find("fa:P_12", NS))
-        # Net value = qty * net_price (per unit)
-        try:
-            net_val = f"{float(qty) * float(net_price):.2f}" if qty and net_price else ""
-        except ValueError:
-            net_val = ""
         vat_amount = _t(row.find("fa:P_11Vat", NS))
+        if not vat_amount and line_val and vat_rate:
+            try:
+                vat_amount = f"{float(line_val) * float(vat_rate) / 100:.2f}"
+            except ValueError:
+                pass
 
         # Truncate long names
         if len(name) > 30:
             name = name[:28] + ".."
 
-        vals = [nr, name, unit, qty, net_price, vat_rate, net_val, vat_amount]
+        vals = [nr, name, unit, qty, unit_price, vat_rate, line_val, vat_amount]
         for v, w in zip(vals, widths):
             pdf.cell(w, 5, v, border=1)
         pdf.ln()

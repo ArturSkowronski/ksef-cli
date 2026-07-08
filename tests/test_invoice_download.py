@@ -56,18 +56,20 @@ def _invoke(args, query_results, xml_by_ksef=None, render=None):
 
 def test_download_default_range_is_previous_month(tmp_path):
     """No options → queries the previous calendar month and writes PDFs."""
-    result, mock_inst, _ = _invoke(
-        ["--out-dir", str(tmp_path)],
-        query_results=[{"invoices": [_INVOICE_A], "hasMore": False}],
-    )
-
-    assert result.exit_code == 0, result.output
-
     today = date.today()
     prev_last = today.replace(day=1)
     year = prev_last.year if prev_last.month > 1 else prev_last.year - 1
     month = prev_last.month - 1 or 12
     last_day = calendar.monthrange(year, month)[1]
+
+    # Issue date must fall inside the previous-month range the command queries.
+    invoice = {**_INVOICE_A, "issueDate": f"{year:04d}-{month:02d}-06"}
+    result, mock_inst, _ = _invoke(
+        ["--out-dir", str(tmp_path)],
+        query_results=[{"invoices": [invoice], "hasMore": False}],
+    )
+
+    assert result.exit_code == 0, result.output
 
     payload = mock_inst.query_invoice_metadata.call_args[0][0]
     assert payload["dateRange"]["from"] == f"{year:04d}-{month:02d}-01T00:00:00.000Z"
@@ -75,6 +77,39 @@ def test_download_default_range_is_previous_month(tmp_path):
     assert payload["subjectType"] == "subject1"
 
     assert (tmp_path / f"{_INVOICE_A['ksefNumber']}.pdf").read_bytes() == _FAKE_PDF
+
+
+def test_download_queries_by_issue_date(tmp_path):
+    """download must filter by the invoice issue date, not the KSeF registration date."""
+    result, mock_inst, _ = _invoke(
+        ["--month", "2026-05", "--out-dir", str(tmp_path)],
+        query_results=[{"invoices": [_INVOICE_A], "hasMore": False}],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = mock_inst.query_invoice_metadata.call_args[0][0]
+    assert payload["dateRange"]["dateType"] == "issue"
+
+
+def test_download_excludes_invoice_issued_outside_range(tmp_path):
+    """KSeF returns corrections bucketed by the corrected period; an invoice whose
+    own issueDate is outside the requested range must be skipped."""
+    out_of_range = {
+        "ksefNumber": "6751577855-20260701-CORR01-01",
+        "invoiceNumber": "K1",
+        "issueDate": "2026-07-01",
+    }
+    result, _, _ = _invoke(
+        ["--month", "2026-05", "--out-dir", str(tmp_path), "--json"],
+        query_results=[{"invoices": [_INVOICE_A, out_of_range], "hasMore": False}],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    nums = [d["ksefNumber"] for d in data["downloaded"]]
+    assert _INVOICE_A["ksefNumber"] in nums
+    assert out_of_range["ksefNumber"] not in nums
+    assert not (tmp_path / f"{out_of_range['ksefNumber']}.pdf").exists()
 
 
 def test_download_explicit_month(tmp_path):
@@ -198,6 +233,58 @@ def test_download_all_subjects_dedupes(tmp_path):
     assert subjects == ["subject1", "subject2"]
     data = json.loads(result.output)
     assert len(data["downloaded"]) == 2  # _INVOICE_A only once
+
+
+def test_download_all_splits_into_issued_and_received_dirs(tmp_path):
+    """--all writes issued invoices to issued/ and received ones to received/."""
+    result, _, _ = _invoke(
+        ["--month", "2026-05", "--out-dir", str(tmp_path), "--all", "--json"],
+        query_results=[
+            {"invoices": [_INVOICE_A], "hasMore": False},
+            {"invoices": [_INVOICE_B], "hasMore": False},
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "issued" / f"{_INVOICE_A['ksefNumber']}.pdf").exists()
+    assert (tmp_path / "received" / f"{_INVOICE_B['ksefNumber']}.pdf").exists()
+    assert not (tmp_path / f"{_INVOICE_A['ksefNumber']}.pdf").exists()
+
+    data = json.loads(result.output)
+    by_nr = {d["ksefNumber"]: d for d in data["downloaded"]}
+    assert by_nr[_INVOICE_A["ksefNumber"]]["subject"] == "issued"
+    assert by_nr[_INVOICE_B["ksefNumber"]]["subject"] == "received"
+    assert by_nr[_INVOICE_B["ksefNumber"]]["files"] == [
+        str(tmp_path / "received" / f"{_INVOICE_B['ksefNumber']}.pdf")
+    ]
+
+
+def test_download_duplicate_in_both_subjects_lands_in_issued(tmp_path):
+    """An invoice returned for both subjects is written once, under issued/."""
+    result, _, _ = _invoke(
+        ["--month", "2026-05", "--out-dir", str(tmp_path), "--all"],
+        query_results=[
+            {"invoices": [_INVOICE_A], "hasMore": False},
+            {"invoices": [_INVOICE_A], "hasMore": False},
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "issued" / f"{_INVOICE_A['ksefNumber']}.pdf").exists()
+    assert not (tmp_path / "received" / f"{_INVOICE_A['ksefNumber']}.pdf").exists()
+
+
+def test_download_single_subject_stays_flat(tmp_path):
+    """Without --all, files go directly into the output directory (no subdirs)."""
+    result, _, _ = _invoke(
+        ["--month", "2026-05", "--out-dir", str(tmp_path), "--received", "--json"],
+        query_results=[{"invoices": [_INVOICE_A], "hasMore": False}],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / f"{_INVOICE_A['ksefNumber']}.pdf").exists()
+    data = json.loads(result.output)
+    assert data["downloaded"][0]["subject"] == "received"
 
 
 def test_download_no_invoices(tmp_path):

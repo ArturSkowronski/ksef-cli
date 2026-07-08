@@ -115,7 +115,7 @@ ksef invoice list --seller-nip 9876543210                      # filtruj po sprz
 ```bash
 ksef invoice download                          # poprzedni miesiąc → ./invoices-YYYY-MM/*.pdf
 ksef invoice download --month 2026-04          # konkretny miesiąc
-ksef invoice download --all                    # wystawione + otrzymane
+ksef invoice download --all                    # wystawione + otrzymane → podkatalogi issued/ i received/
 ksef invoice download --format both -o ./arch  # XML + PDF do wskazanego katalogu
 ```
 

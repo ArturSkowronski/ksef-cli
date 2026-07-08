@@ -18,6 +18,7 @@ from textual.widgets import DataTable, Footer, Static
 
 from . import config
 from .client import KSeFClient, KSeFError
+from .invoice import _issue_date_in_range
 
 
 # ── Widgets ────────────────────────────────────────────────────────────
@@ -357,17 +358,21 @@ class KSeFDashboard(App):
         try:
             with KSeFClient(access_token=token) as c:
                 for d_from, d_to in ranges:
+                    range_from, range_to = d_from.isoformat(), d_to.isoformat()
                     payload: dict = {
                         "subjectType": subject,
                         "dateRange": {
-                            "dateType": "invoicing",
-                            "from": f"{d_from.isoformat()}T00:00:00.000Z",
-                            "to": f"{d_to.isoformat()}T23:59:59.999Z",
+                            "dateType": "issue",
+                            "from": f"{range_from}T00:00:00.000Z",
+                            "to": f"{range_to}T23:59:59.999Z",
                         },
                     }
                     while True:
                         r = c.query_invoice_metadata(payload)
-                        all_inv.extend(r.get("invoices", r.get("invoiceHeaderList", [])))
+                        page = r.get("invoices", r.get("invoiceHeaderList", []))
+                        all_inv.extend(
+                            inv for inv in page if _issue_date_in_range(inv, range_from, range_to)
+                        )
                         if not r.get("hasMore") or not r.get("_continuationToken"):
                             break
                         payload["continuationToken"] = r["_continuationToken"]
